@@ -433,6 +433,83 @@ async function clearMemory() {
   await loadHistory();
 }
 
+// ---------- 노션 연동 ----------
+
+async function refreshNotion() {
+  const s = await invoke<{ connected: boolean; last_sync: number }>("notion_status").catch(() => ({
+    connected: false,
+    last_sync: 0,
+  }));
+  const badge = $("#notion-status");
+  ($("#notion-connect") as HTMLElement).hidden = s.connected;
+  ($("#notion-connected") as HTMLElement).hidden = !s.connected;
+  if (s.connected) {
+    badge.textContent = "연결됨";
+    badge.className = "badge badge-ok";
+    if (s.last_sync) {
+      const t = new Date(s.last_sync);
+      $("#notion-sync-info").textContent = `마지막 동기화: ${t.getMonth() + 1}/${t.getDate()} ${String(t.getHours()).padStart(2, "0")}:${String(t.getMinutes()).padStart(2, "0")}`;
+    } else {
+      $("#notion-sync-info").textContent = "연결됨 — 아직 동기화 전";
+    }
+  } else {
+    badge.textContent = "미연결";
+    badge.className = "badge badge-muted";
+  }
+  return s.connected;
+}
+
+async function notionConnect() {
+  const token = $<HTMLInputElement>("#notion-token").value.trim();
+  const page = $<HTMLInputElement>("#notion-page").value.trim();
+  if (!token || !page) return alert("토큰과 노션 페이지 주소를 모두 입력하세요.");
+  const btn = $<HTMLButtonElement>("#notion-connect-btn");
+  btn.disabled = true;
+  btn.textContent = "연결 중…";
+  try {
+    await invoke("notion_connect", { token, page });
+    $<HTMLInputElement>("#notion-token").value = "";
+    await refreshNotion();
+    await notionSync();
+  } catch (e) {
+    alert("연결 실패: " + e);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "연결";
+  }
+}
+
+async function notionSync() {
+  const s = await invoke<{ connected: boolean }>("notion_status").catch(() => ({ connected: false }));
+  if (!s.connected) return;
+  const btn = document.querySelector("#notion-sync-btn") as HTMLButtonElement | null;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "동기화 중…";
+  }
+  try {
+    const r = await invoke<{ pushed: number; pulled: number; total: number }>("notion_sync");
+    if (btn) btn.textContent = `↑${r.pushed} ↓${r.pulled} 완료`;
+    await loadHistory();
+    await refreshNotion();
+  } catch (e) {
+    if (btn) btn.textContent = "동기화 실패";
+    console.warn("notion sync 실패(무시):", e);
+  } finally {
+    if (btn)
+      setTimeout(() => {
+        btn.disabled = false;
+        btn.textContent = "지금 동기화";
+      }, 2500);
+  }
+}
+
+async function notionDisconnect() {
+  if (!confirm("노션 연결을 해제할까요? (로컬 대화 기록은 그대로 유지됩니다)")) return;
+  await invoke("notion_disconnect").catch(() => {});
+  await refreshNotion();
+}
+
 // ---------- 이미지 엔진 상태 배지 ----------
 
 async function checkImageBackends() {
@@ -624,11 +701,17 @@ window.addEventListener("DOMContentLoaded", async () => {
     }),
   );
   $("#files").addEventListener("change", renderAttachList);
+  $("#notion-connect-btn").addEventListener("click", notionConnect);
+  $("#notion-sync-btn").addEventListener("click", notionSync);
+  $("#notion-disconnect-btn").addEventListener("click", notionDisconnect);
+  // 오프라인 → 온라인 복귀 시 자동 동기화
+  window.addEventListener("online", () => notionSync());
   await loadSystem();
   await refreshOllama();
   await loadModels();
   await loadHistory();
   await checkImageBackends();
+  if (await refreshNotion()) notionSync(); // 앱 시작 시 연결돼 있으면 자동 동기화(오프라인 누적분 따라잡기)
   setInterval(refreshOllama, 5000);
   setInterval(checkImageBackends, 8000);
   checkForUpdate();

@@ -724,15 +724,17 @@ async fn save_and_summarize(
     let summary = generate(client, model, &summary_prompt)
         .await
         .unwrap_or_else(|_| prompt.chars().take(60).collect());
-    save_conversation(
-        app,
-        Conversation {
-            time: now_ms(),
-            prompt: prompt.to_string(),
-            summary,
-            result: answer.to_string(),
-        },
-    );
+    let conv = Conversation {
+        time: now_ms(),
+        prompt: prompt.to_string(),
+        summary,
+        result: answer.to_string(),
+    };
+    save_conversation(app, conv.clone());
+    // 노션 연결돼 있으면 노션에도 저장 (오프라인이면 실패해도 무시 → 다음 동기화에서 따라잡음)
+    if let Some(cfg) = load_notion(app) {
+        let _ = notion_create_page(client, &cfg.token, &cfg.db_id, &conv).await;
+    }
     let _ = app.emit("memory-saved", serde_json::json!({}));
 }
 
@@ -830,6 +832,305 @@ async fn rag_context(
         .map(|(_, i)| chunks[i].clone())
         .collect();
     Ok(selected.join("\n---\n"))
+}
+
+// ---------- 노션 연동 (오프라인 우선 양방향 동기화) ----------
+
+const NOTION: &str = "https://api.notion.com/v1";
+const NOTION_VER: &str = "2022-06-28";
+
+#[derive(Serialize, Deserialize, Default, Clone)]
+struct NotionConfig {
+    token: String,
+    db_id: String,
+    last_sync: u64,
+}
+
+fn notion_path(app: &AppHandle) -> PathBuf {
+    data_dir(app).join("notion.json")
+}
+
+fn load_notion(app: &AppHandle) -> Option<NotionConfig> {
+    let cfg: NotionConfig = std::fs::read_to_string(notion_path(app))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())?;
+    if cfg.token.is_empty() || cfg.db_id.is_empty() {
+        None
+    } else {
+        Some(cfg)
+    }
+}
+
+fn save_notion(app: &AppHandle, cfg: &NotionConfig) {
+    if let Ok(s) = serde_json::to_string_pretty(cfg) {
+        std::fs::write(notion_path(app), s).ok();
+    }
+}
+
+// 페이지 URL/ID에서 32자리 hex id 추출 → 대시 포맷
+fn extract_page_id(input: &str) -> Option<String> {
+    let hex: String = input
+        .chars()
+        .filter(|c| c.is_ascii_hexdigit())
+        .collect();
+    if hex.len() < 32 {
+        return None;
+    }
+    let id = &hex[hex.len() - 32..];
+    Some(format!(
+        "{}-{}-{}-{}-{}",
+        &id[0..8],
+        &id[8..12],
+        &id[12..16],
+        &id[16..20],
+        &id[20..32]
+    ))
+}
+
+fn nclient(token: &str) -> (reqwest::Client, String) {
+    (reqwest::Client::new(), format!("Bearer {token}"))
+}
+
+// 대화 1건을 노션 DB에 페이지로 생성
+async fn notion_create_page(
+    client: &reqwest::Client,
+    token: &str,
+    db_id: &str,
+    conv: &Conversation,
+) -> Result<(), String> {
+    let title: String = conv.prompt.chars().take(100).collect();
+    let summary: String = conv.summary.chars().take(1900).collect();
+    let body_blocks: Vec<serde_json::Value> = chunk_text(&conv.result, 1800, 0)
+        .iter()
+        .take(90)
+        .map(|c| {
+            serde_json::json!({
+                "object":"block","type":"paragraph",
+                "paragraph":{"rich_text":[{"type":"text","text":{"content": c}}]}
+            })
+        })
+        .collect();
+    let body = serde_json::json!({
+        "parent": {"database_id": db_id},
+        "properties": {
+            "요청": {"title":[{"type":"text","text":{"content": title}}]},
+            "time": {"number": conv.time as f64},
+            "요약": {"rich_text":[{"type":"text","text":{"content": summary}}]}
+        },
+        "children": body_blocks
+    });
+    let resp = client
+        .post(format!("{NOTION}/pages"))
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Notion-Version", NOTION_VER)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        Err(resp.text().await.unwrap_or_default().chars().take(200).collect())
+    }
+}
+
+struct NotionEntry {
+    time: u64,
+    prompt: String,
+    summary: String,
+    page_id: String,
+}
+
+async fn notion_query_all(
+    client: &reqwest::Client,
+    token: &str,
+    db_id: &str,
+) -> Result<Vec<NotionEntry>, String> {
+    let mut entries = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let mut body = serde_json::json!({ "page_size": 100 });
+        if let Some(c) = &cursor {
+            body["start_cursor"] = serde_json::json!(c);
+        }
+        let v: serde_json::Value = client
+            .post(format!("{NOTION}/databases/{db_id}/query"))
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Notion-Version", NOTION_VER)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?
+            .json()
+            .await
+            .map_err(|e| e.to_string())?;
+        if let Some(arr) = v["results"].as_array() {
+            for r in arr {
+                let p = &r["properties"];
+                let time = p["time"]["number"].as_f64().unwrap_or(0.0) as u64;
+                if time == 0 {
+                    continue;
+                }
+                entries.push(NotionEntry {
+                    time,
+                    prompt: p["요청"]["title"][0]["plain_text"].as_str().unwrap_or("").to_string(),
+                    summary: p["요약"]["rich_text"][0]["plain_text"].as_str().unwrap_or("").to_string(),
+                    page_id: r["id"].as_str().unwrap_or("").to_string(),
+                });
+            }
+        }
+        if v["has_more"].as_bool().unwrap_or(false) {
+            cursor = v["next_cursor"].as_str().map(|s| s.to_string());
+        } else {
+            break;
+        }
+    }
+    Ok(entries)
+}
+
+// 노션 페이지 본문(결과 전체) 읽기
+async fn notion_page_text(
+    client: &reqwest::Client,
+    token: &str,
+    page_id: &str,
+) -> Result<String, String> {
+    let v: serde_json::Value = client
+        .get(format!("{NOTION}/blocks/{page_id}/children?page_size=100"))
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Notion-Version", NOTION_VER)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut out = String::new();
+    if let Some(arr) = v["results"].as_array() {
+        for b in arr {
+            if let Some(rt) = b["paragraph"]["rich_text"].as_array() {
+                for t in rt {
+                    if let Some(s) = t["plain_text"].as_str() {
+                        out.push_str(s);
+                    }
+                }
+                out.push('\n');
+            }
+        }
+    }
+    Ok(out.trim().to_string())
+}
+
+// 연결: 페이지 아래에 DB를 만들고(없으면) 설정 저장
+#[tauri::command]
+async fn notion_connect(app: AppHandle, token: String, page: String) -> Result<(), String> {
+    let (client, auth) = nclient(&token);
+    // 이미 DB가 있고 유효하면 재사용
+    if let Some(cfg) = load_notion(&app) {
+        let ok = client
+            .get(format!("{NOTION}/databases/{}", cfg.db_id))
+            .header("Authorization", &auth)
+            .header("Notion-Version", NOTION_VER)
+            .send()
+            .await
+            .map(|r| r.status().is_success())
+            .unwrap_or(false);
+        if ok {
+            save_notion(
+                &app,
+                &NotionConfig { token, db_id: cfg.db_id, last_sync: cfg.last_sync },
+            );
+            return Ok(());
+        }
+    }
+    let page_id = extract_page_id(&page).ok_or("노션 페이지 주소에서 ID를 찾지 못했습니다.")?;
+    let body = serde_json::json!({
+        "parent": {"type":"page_id","page_id": page_id},
+        "title": [{"type":"text","text":{"content":"AI 대화 기록"}}],
+        "properties": {
+            "요청": {"title": {}},
+            "time": {"number": {}},
+            "요약": {"rich_text": {}}
+        }
+    });
+    let resp = client
+        .post(format!("{NOTION}/databases"))
+        .header("Authorization", &auth)
+        .header("Notion-Version", NOTION_VER)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        let t: String = resp.text().await.unwrap_or_default().chars().take(300).collect();
+        return Err(format!("DB 생성 실패(페이지가 통합과 공유됐는지 확인): {t}"));
+    }
+    let v: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let db_id = v["id"].as_str().ok_or("DB id 없음")?.to_string();
+    save_notion(&app, &NotionConfig { token, db_id, last_sync: 0 });
+    Ok(())
+}
+
+#[tauri::command]
+fn notion_status(app: AppHandle) -> serde_json::Value {
+    match load_notion(&app) {
+        Some(c) => serde_json::json!({ "connected": true, "last_sync": c.last_sync }),
+        None => serde_json::json!({ "connected": false, "last_sync": 0 }),
+    }
+}
+
+#[tauri::command]
+fn notion_disconnect(app: AppHandle) -> Result<(), String> {
+    std::fs::remove_file(notion_path(&app)).ok();
+    Ok(())
+}
+
+// 양방향 동기화: 로컬에만 있는 건 노션으로, 노션에만 있는 건 로컬로 (시각 키 기준 합집합)
+#[tauri::command]
+async fn notion_sync(app: AppHandle) -> Result<serde_json::Value, String> {
+    let cfg = load_notion(&app).ok_or("노션이 연결되어 있지 않습니다.")?;
+    let client = reqwest::Client::new();
+    let local = load_conversations(&app);
+    let remote = notion_query_all(&client, &cfg.token, &cfg.db_id).await?;
+    let local_times: std::collections::HashSet<u64> = local.iter().map(|c| c.time).collect();
+    let remote_times: std::collections::HashSet<u64> = remote.iter().map(|e| e.time).collect();
+
+    let mut pushed = 0u32;
+    for c in &local {
+        if !remote_times.contains(&c.time)
+            && notion_create_page(&client, &cfg.token, &cfg.db_id, c).await.is_ok()
+        {
+            pushed += 1;
+        }
+    }
+
+    let mut merged = local.clone();
+    let mut pulled = 0u32;
+    for e in &remote {
+        if !local_times.contains(&e.time) {
+            let result = notion_page_text(&client, &cfg.token, &e.page_id)
+                .await
+                .unwrap_or_else(|_| e.summary.clone());
+            merged.push(Conversation {
+                time: e.time,
+                prompt: e.prompt.clone(),
+                summary: e.summary.clone(),
+                result,
+            });
+            pulled += 1;
+        }
+    }
+    if pulled > 0 {
+        merged.sort_by_key(|c| c.time);
+        if let Ok(s) = serde_json::to_string_pretty(&merged) {
+            std::fs::write(conv_path(&app), s).ok();
+        }
+    }
+    save_notion(
+        &app,
+        &NotionConfig { token: cfg.token, db_id: cfg.db_id, last_sync: now_ms() },
+    );
+    let _ = app.emit("memory-saved", serde_json::json!({}));
+    Ok(serde_json::json!({ "pushed": pushed, "pulled": pulled, "total": merged.len() }))
 }
 
 // 하네스 실행: 모델 하나로 분해·작업·검토·종합 전부 수행
@@ -951,6 +1252,10 @@ pub fn run() {
             run_harness,
             run_single,
             rag_context,
+            notion_connect,
+            notion_status,
+            notion_disconnect,
+            notion_sync,
             list_conversations,
             clear_conversations,
             check_image_backends,

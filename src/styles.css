@@ -170,7 +170,7 @@ button.primary { width: 100%; padding: 12px; font-size: 15px; margin-top: 12px; 
 
 .run-row { margin-bottom: 10px; }
 .run-row label { font-size: 13px; color: var(--muted); display: flex; flex-direction: column; gap: 6px; }
-select, textarea {
+select, textarea, input:not([type="file"]) {
   background: #11141a;
   color: var(--txt);
   border: 1px solid var(--line);
@@ -179,6 +179,7 @@ select, textarea {
   font: inherit;
   width: 100%;
 }
+#notion-token, #notion-page { margin-bottom: 10px; }
 textarea { resize: vertical; }
 
 .steps { padding: 0; margin: 0 0 18px; display: flex; flex-direction: column; gap: 8px; }

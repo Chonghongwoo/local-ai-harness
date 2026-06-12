@@ -67,6 +67,24 @@
         <div id="history" class="history"></div>
       </section>
 
+      <!-- 4b. 노션 연동 -->
+      <section class="card">
+        <h2>노션 연동 <span id="notion-status" class="badge badge-muted">미연결</span></h2>
+        <div id="notion-connect">
+          <p class="hint">대화를 노션에도 저장하고 양방향 동기화합니다. 노션에서 ① 통합(Integration) 생성 → 토큰 복사 → ② 페이지 하나를 그 통합과 공유 → ③ 아래에 토큰과 그 페이지 주소를 붙여넣으세요. (오프라인에 쌓인 것도 온라인 되면 자동 합쳐집니다.)</p>
+          <input id="notion-token" type="password" placeholder="통합 토큰 (secret_... 또는 ntn_...)" />
+          <input id="notion-page" placeholder="공유한 노션 페이지 주소(URL)" />
+          <button id="notion-connect-btn" class="primary">연결</button>
+        </div>
+        <div id="notion-connected" hidden>
+          <p class="hint" id="notion-sync-info">연결됨</p>
+          <div class="install-direct">
+            <button id="notion-sync-btn">지금 동기화</button>
+            <button id="notion-disconnect-btn" class="ghost">연결 해제</button>
+          </div>
+        </div>
+      </section>
+
       <!-- 5. 통합 프롬프트 -->
       <section class="card">
         <h2>프롬프트 <span id="img-backend" class="badge badge-muted">이미지 엔진 확인 중…</span></h2>
