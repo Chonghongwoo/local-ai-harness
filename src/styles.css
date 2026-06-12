@@ -12,6 +12,9 @@
 
 * { box-sizing: border-box; }
 
+/* hidden 속성은 어떤 display 규칙보다 우선해서 항상 숨김 */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   background: var(--bg);
@@ -95,6 +98,7 @@ body {
   margin-bottom: 16px;
   font-size: 13px;
 }
+.ollama-setup[hidden] { display: none; }
 .ollama-setup button { white-space: nowrap; flex-shrink: 0; }
 
 .card {
