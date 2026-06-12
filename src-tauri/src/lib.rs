@@ -240,6 +240,140 @@ async fn pull_model(app: AppHandle, model: String) -> Result<(), String> {
     Ok(())
 }
 
+// ---------- Ollama 설치/실행 자동화 ----------
+
+#[derive(Serialize)]
+struct OllamaStatus {
+    installed: bool,
+    running: bool,
+}
+
+fn ollama_installed() -> bool {
+    if std::process::Command::new("ollama")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return std::path::Path::new("/Applications/Ollama.app").exists();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            return std::path::Path::new(&format!("{local}\\Programs\\Ollama\\ollama.exe")).exists();
+        }
+    }
+    #[allow(unreachable_code)]
+    false
+}
+
+#[tauri::command]
+async fn ollama_status() -> OllamaStatus {
+    let running = reqwest::Client::new()
+        .get(format!("{OLLAMA}/api/version"))
+        .timeout(std::time::Duration::from_millis(800))
+        .send()
+        .await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false);
+    let installed = running || ollama_installed();
+    OllamaStatus { installed, running }
+}
+
+// 설치돼 있는 Ollama 서버를 백그라운드로 구동
+#[tauri::command]
+fn start_ollama() -> Result<(), String> {
+    if std::process::Command::new("ollama")
+        .arg("serve")
+        .spawn()
+        .is_ok()
+    {
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .args(["-a", "Ollama"])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let local = std::env::var("LOCALAPPDATA").map_err(|e| e.to_string())?;
+        std::process::Command::new(format!("{local}\\Programs\\Ollama\\ollama.exe"))
+            .arg("serve")
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    #[allow(unreachable_code)]
+    Err("Ollama 실행 파일을 찾지 못했습니다.".into())
+}
+
+async fn download_file(
+    app: &AppHandle,
+    url: &str,
+    path: &std::path::Path,
+) -> Result<(), String> {
+    let resp = reqwest::Client::new()
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let total = resp.content_length().unwrap_or(0);
+    let mut file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+    let mut downloaded: u64 = 0;
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| e.to_string())?;
+        std::io::Write::write_all(&mut file, &chunk).map_err(|e| e.to_string())?;
+        downloaded += chunk.len() as u64;
+        if total > 0 {
+            let _ = app.emit(
+                "ollama-progress",
+                serde_json::json!({ "pct": downloaded * 100 / total }),
+            );
+        }
+    }
+    Ok(())
+}
+
+// 공식 Ollama 설치파일을 받아 실행 (OS 자동 판별)
+#[tauri::command]
+async fn install_ollama(app: AppHandle) -> Result<(), String> {
+    let tmp = std::env::temp_dir();
+    #[cfg(target_os = "macos")]
+    {
+        let zip = tmp.join("Ollama-darwin.zip");
+        download_file(&app, "https://ollama.com/download/Ollama-darwin.zip", &zip).await?;
+        let dest = tmp.join("ollama-install");
+        std::fs::create_dir_all(&dest).ok();
+        std::process::Command::new("ditto")
+            .args(["-xk", &zip.to_string_lossy(), &dest.to_string_lossy()])
+            .status()
+            .map_err(|e| e.to_string())?;
+        std::process::Command::new("open")
+            .arg(dest.join("Ollama.app"))
+            .status()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let exe = tmp.join("OllamaSetup.exe");
+        download_file(&app, "https://ollama.com/download/OllamaSetup.exe", &exe).await?;
+        std::process::Command::new(&exe)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    let _ = app.emit("ollama-installing", serde_json::json!({ "done": true }));
+    Ok(())
+}
+
 // 단일 생성 (stream=false)
 async fn generate(client: &reqwest::Client, model: &str, prompt: &str) -> Result<String, String> {
     #[derive(Deserialize)]
@@ -712,6 +846,9 @@ pub fn run() {
             get_tier_models,
             get_catalog,
             check_ollama,
+            ollama_status,
+            start_ollama,
+            install_ollama,
             list_installed_models,
             pull_model,
             delete_model,

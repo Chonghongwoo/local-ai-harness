@@ -34,18 +34,79 @@ let activeCat = "전체";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
 
+let autoStarted = false;
+let installing = false;
+
 async function refreshOllama() {
-  const ok = await invoke<boolean>("check_ollama");
+  const s = await invoke<{ installed: boolean; running: boolean }>("ollama_status").catch(() => ({
+    installed: false,
+    running: false,
+  }));
   const el = $("#ollama-status");
-  if (ok) {
+  const setup = $("#ollama-setup");
+  if (s.running) {
     el.textContent = "Ollama 실행 중";
     el.className = "badge badge-ok";
-  } else {
-    el.textContent = "Ollama 꺼짐 — 터미널에서 'ollama serve'";
-    el.className = "badge badge-err";
+    setup.hidden = true;
+    return true;
   }
-  return ok;
+  el.textContent = "Ollama 꺼짐";
+  el.className = "badge badge-err";
+  if (installing) return false; // 설치 진행 중이면 배너 건드리지 않음
+  if (s.installed) {
+    // 설치돼 있으면 자동으로 한 번 실행 시도
+    if (!autoStarted) {
+      autoStarted = true;
+      await invoke("start_ollama").catch(() => {});
+      setTimeout(refreshOllama, 1500);
+    }
+    showOllamaSetup("Ollama가 설치돼 있습니다. 꺼져 있으면 실행하세요.", "Ollama 실행", startOllama);
+  } else {
+    showOllamaSetup("Ollama가 설치돼 있지 않습니다. 자동으로 설치할 수 있습니다.", "Ollama 자동 설치", installOllama);
+  }
+  return false;
 }
+
+function showOllamaSetup(msg: string, btnText: string, handler: () => void) {
+  $("#ollama-setup").hidden = false;
+  $("#ollama-setup-msg").textContent = msg;
+  const btn = $<HTMLButtonElement>("#ollama-action");
+  btn.textContent = btnText;
+  btn.disabled = false;
+  btn.onclick = handler;
+}
+
+async function startOllama() {
+  const btn = $<HTMLButtonElement>("#ollama-action");
+  btn.disabled = true;
+  btn.textContent = "실행 중…";
+  await invoke("start_ollama").catch((e) => alert("실행 실패: " + e));
+  setTimeout(refreshOllama, 1500);
+}
+
+async function installOllama() {
+  installing = true;
+  const btn = $<HTMLButtonElement>("#ollama-action");
+  btn.disabled = true;
+  btn.textContent = "다운로드 중… 0%";
+  try {
+    await invoke("install_ollama");
+    $("#ollama-setup-msg").textContent =
+      "설치 마법사를 진행해 주세요. 설치가 끝나면 자동으로 연결됩니다.";
+    btn.textContent = "설치 진행 중…";
+  } catch (e) {
+    alert("설치 실패: " + e);
+    btn.disabled = false;
+    btn.textContent = "Ollama 자동 설치";
+  } finally {
+    installing = false;
+  }
+}
+
+listen<{ pct: number }>("ollama-progress", (e) => {
+  const btn = document.querySelector("#ollama-action") as HTMLButtonElement | null;
+  if (btn && installing) btn.textContent = `다운로드 중… ${e.payload.pct}%`;
+});
 
 async function loadSystem() {
   const info = await invoke<SystemInfo>("get_system_info");
