@@ -748,50 +748,6 @@ async fn run_single(app: AppHandle, prompt: String, model: String) -> Result<Str
     Ok(answer)
 }
 
-// 추론 실행: 단계별로 깊게 추론 후 답 (어려운 문제 / 추론모델 r1 권장)
-#[tauri::command]
-async fn run_reasoning(app: AppHandle, prompt: String, model: String) -> Result<String, String> {
-    let client = reqwest::Client::new();
-    let (mem_count, mem) = memory_context(&app);
-    let _ = app.emit("memory-info", serde_json::json!({ "count": mem_count }));
-    let full = format!(
-        "{mem}다음 문제를 단계별로 신중히 추론하라. 가정과 근거를 따져보고, 마지막에 '최종 답:'으로 명확한 결론을 제시하라.\n\n{prompt}"
-    );
-    let answer = generate_stream(&app, &client, &model, &full, "final-token").await?;
-    save_and_summarize(&app, &client, &model, &prompt, &answer).await;
-    Ok(answer)
-}
-
-// 자기수정 실행: 초안 → 스스로 비평 → 개선 (정확도↑)
-#[tauri::command]
-async fn run_refine(app: AppHandle, prompt: String, model: String) -> Result<String, String> {
-    let client = reqwest::Client::new();
-    let (mem_count, mem) = memory_context(&app);
-    let _ = app.emit("memory-info", serde_json::json!({ "count": mem_count }));
-
-    emit_step(&app, "draft", "start", "초안 작성 중...");
-    let draft = generate(&client, &model, &format!("{mem}{prompt}")).await?;
-    emit_step(&app, "draft", "done", "");
-
-    emit_step(&app, "critique", "start", "스스로 검토 중...");
-    let critique = generate(
-        &client,
-        &model,
-        &format!("다음 답변의 사실 오류·누락·약점을 구체적으로 짧게 지적하라.\n\n질문: {prompt}\n\n답변: {draft}"),
-    )
-    .await?;
-    emit_step(&app, "critique", "done", &critique);
-
-    emit_step(&app, "improve", "start", "개선본 작성 중...");
-    let improve_prompt = format!(
-        "{mem}아래 지적을 반영해 더 정확하고 완성도 높은 최종 답변을 작성하라.\n\n질문: {prompt}\n\n초안: {draft}\n\n지적: {critique}"
-    );
-    let answer = generate_stream(&app, &client, &model, &improve_prompt, "final-token").await?;
-    emit_step(&app, "improve", "done", "");
-
-    save_and_summarize(&app, &client, &model, &prompt, &answer).await;
-    Ok(answer)
-}
 
 // ---------- RAG (문서 임베딩 검색) ----------
 
@@ -946,32 +902,31 @@ async fn run_harness(app: AppHandle, prompt: String, model: String) -> Result<St
     let review = generate(&client, &model, &review_prompt).await?;
     emit_step(&app, "review", "done", &review);
 
-    // 4) 종합 (스트리밍)
-    emit_step(&app, "synthesize", "start", "최종 결과물 종합 중...");
+    // 4) 종합 — 추론(단계적 사고)으로 초안 작성
+    emit_step(&app, "synthesize", "start", "단계적으로 추론하며 종합 중...");
     let synth_prompt = format!(
-        "{mem}다음 부분 결과와 검토 의견을 바탕으로, 원래 요청에 대한 하나의 완성되고 매끄러운 최종 답변을 작성하세요.\n\n요청: {prompt}\n\n부분 결과:\n{joined}\n\n검토 의견:\n{review}"
+        "{mem}다음 부분 결과와 검토 의견을 바탕으로, 단계적으로 추론하며 원래 요청에 대한 하나의 완성된 답변을 작성하라.\n\n요청: {prompt}\n\n부분 결과:\n{joined}\n\n검토 의견:\n{review}"
+    );
+    let draft = generate(&client, &model, &synth_prompt).await?;
+    emit_step(&app, "synthesize", "done", "");
+
+    // 5) 자기수정 — 초안 비평 후 개선 (스트리밍)
+    emit_step(&app, "refine", "start", "스스로 점검·개선 중...");
+    let critique = generate(
+        &client,
+        &model,
+        &format!("다음 답변의 사실 오류·누락·약점을 구체적으로 짧게 지적하라.\n\n요청: {prompt}\n\n답변: {draft}"),
+    )
+    .await?;
+    let improve_prompt = format!(
+        "{mem}아래 지적을 반영해 더 정확하고 완성도 높은 최종 답변을 작성하라.\n\n요청: {prompt}\n\n초안: {draft}\n\n지적: {critique}"
     );
     let final_answer =
-        generate_stream(&app, &client, &model, &synth_prompt, "final-token").await?;
-    emit_step(&app, "synthesize", "done", "완료");
+        generate_stream(&app, &client, &model, &improve_prompt, "final-token").await?;
+    emit_step(&app, "refine", "done", "");
 
-    // 5) 대화 요약 저장
-    let summary_prompt = format!(
-        "다음 요청과 답변을 한국어 1~2문장으로 요약하라. 핵심 주제와 결론만, 군더더기 없이.\n\n요청: {prompt}\n\n답변: {final_answer}"
-    );
-    let summary = generate(&client, &model, &summary_prompt)
-        .await
-        .unwrap_or_else(|_| prompt.chars().take(60).collect());
-    save_conversation(
-        &app,
-        Conversation {
-            time: now_ms(),
-            prompt: prompt.clone(),
-            summary,
-            result: final_answer.clone(),
-        },
-    );
-    let _ = app.emit("memory-saved", serde_json::json!({}));
+    // 6) 대화 요약 저장
+    save_and_summarize(&app, &client, &model, &prompt, &final_answer).await;
 
     Ok(final_answer)
 }
@@ -995,8 +950,6 @@ pub fn run() {
             delete_model,
             run_harness,
             run_single,
-            run_reasoning,
-            run_refine,
             rag_context,
             list_conversations,
             clear_conversations,

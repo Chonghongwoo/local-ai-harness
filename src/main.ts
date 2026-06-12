@@ -291,10 +291,8 @@ function updateRoleNote() {
   const mode = $<HTMLSelectElement>("#harness-mode").value;
   const note = $("#role-mode-note");
   const desc: Record<string, string> = {
-    single: "한 번에 바로 답합니다.",
-    reasoning: "단계별로 깊게 추론한 뒤 답합니다 (어려운 문제·추론모델 권장).",
-    refine: "초안을 쓰고 스스로 비평해 개선합니다 (정확도↑).",
-    harness: "분해·작업·검토·종합 파이프라인을 돌립니다.",
+    single: "빠르게 한 번에 답합니다.",
+    harness: "분해·작업·검토·종합 + 단계적 추론·자기수정까지 (느리지만 꼼꼼).",
   };
   note.textContent = model ? `${model} — ${desc[mode] || ""}` : "";
 }
@@ -335,13 +333,11 @@ listen<{ model: string; data?: any; done?: boolean }>("pull-progress", (e) => {
 
 // 하네스 진행 표시 — 이벤트에 따라 동적으로 행 생성
 const PHASE_LABEL: Record<string, string> = {
-  decompose: "① 분해 · 관리",
+  decompose: "① 분해",
   work: "② 작업",
-  review: "③ 검토 · 관리",
-  synthesize: "④ 종합 · 관리",
-  draft: "① 초안",
-  critique: "② 자기 비평",
-  improve: "③ 개선",
+  review: "③ 검토",
+  synthesize: "④ 종합 (추론)",
+  refine: "⑤ 자기수정",
 };
 
 function getStepRow(phase: string): HTMLElement {
@@ -596,27 +592,17 @@ async function run() {
         }
       }
       const full = prompt + (context ? `\n\n[첨부 문서]\n${context}` : "");
-      const labels: Record<string, string> = {
-        single: "단일",
-        reasoning: "추론",
-        refine: "자기수정",
-        harness: "하네스",
-      };
       delete f.dataset.streaming;
-      const cmd =
-        harnessMode === "reasoning"
-          ? "run_reasoning"
-          : harnessMode === "refine"
-            ? "run_refine"
-            : harnessMode === "harness"
-              ? "run_harness"
-              : "run_single";
-      const showSteps = harnessMode === "refine" || harnessMode === "harness";
-      $("#run-title").textContent = (showSteps ? "진행 상황 · " : "") + labels[harnessMode] + ` · ${model}${ragNote}`;
-      showResult(showSteps, false);
-      if (showSteps) $("#steps").innerHTML = "";
+      const isHarness = harnessMode === "harness";
+      $("#run-title").textContent =
+        (isHarness ? "진행 상황 · 하네스" : "단일") + ` · ${model}${ragNote}`;
+      showResult(isHarness, false);
+      if (isHarness) $("#steps").innerHTML = "";
       f.textContent = "실행 중…";
-      const result = await invoke<string>(cmd, { prompt: full, model });
+      const result = await invoke<string>(isHarness ? "run_harness" : "run_single", {
+        prompt: full,
+        model,
+      });
       f.textContent = result;
     }
   } catch (err) {
