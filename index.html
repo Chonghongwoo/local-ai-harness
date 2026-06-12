@@ -11,7 +11,12 @@
     <main class="app">
       <header class="hdr">
         <h1>로컬 AI 하네스</h1>
-        <span id="ollama-status" class="badge badge-muted">Ollama 확인 중…</span>
+        <div class="hdr-right">
+          <span id="ollama-status" class="badge badge-muted">Ollama…</span>
+          <button id="models-open" class="hdr-btn" title="모델 관리">🧠 모델</button>
+          <button id="memory-open" class="hdr-btn" title="기억(이전 대화)">🕘 기억</button>
+          <button id="notion-open" class="hdr-btn" title="노션 연동">📓 노션 <span id="notion-dot">○</span></button>
+        </div>
       </header>
 
       <div id="ollama-setup" class="ollama-setup" hidden>
@@ -19,95 +24,27 @@
         <button id="ollama-action"></button>
       </div>
 
-      <!-- 1. 시스템 / 단계 -->
+      <!-- 작업 -->
       <section class="card">
-        <h2>시스템 메모리</h2>
-        <div class="mem-grid">
-          <div><span class="mem-num" id="mem-total">–</span><small>총 RAM</small></div>
-          <div><span class="mem-num" id="mem-avail">–</span><small>가용 RAM</small></div>
-          <div><span class="mem-num tier" id="tier-num">–</span><small>난이도 단계</small></div>
-        </div>
-        <p class="tier-desc" id="tier-desc"></p>
-      </section>
-
-      <!-- 2. 모델 -->
-      <section class="card">
-        <h2>모델 카탈로그</h2>
-        <p class="hint">받아둔 모델만 역할에 지정할 수 있습니다. <b>다운로드 시에만 인터넷이 필요</b>하고, 받은 뒤 실행은 완전 오프라인입니다. 현재 단계 추천 모델엔 ★ 표시.</p>
-        <div class="install-direct">
-          <input id="custom-model" placeholder="모델 이름 직접 입력 (예: llama3.3:70b) — 목록에 없어도 설치 가능" />
-          <button id="custom-install">설치</button>
-        </div>
-        <div id="tier-tabs" class="tabs tier-tabs"></div>
-        <div id="cat-tabs" class="tabs"></div>
-        <input id="model-search" class="search" placeholder="현재 탭 안에서 검색 (이름·설명)" />
-        <div id="model-list" class="model-list"></div>
-      </section>
-
-      <!-- 3. AI 모델 · 실행 방식 -->
-      <section class="card">
-        <h2>AI 모델 · 실행 방식</h2>
-        <p class="hint">사용할 모델 하나를 고르고, 실행 방식을 선택합니다. <b>단일</b>은 한 번에 바로 답하고, <b>하네스</b>는 분해·작업·검토·종합 파이프라인을 돌립니다.</p>
         <div class="roles">
-          <label>AI 모델<select id="ai-model"></select></label>
-          <label>실행 방식
+          <label>모델<select id="ai-model"></select></label>
+          <label>방식
             <select id="harness-mode">
-              <option value="single">단일 (빠르게 답)</option>
-              <option value="harness">하네스 (추론·자기수정까지 꼼꼼)</option>
+              <option value="single">단일 (빠름)</option>
+              <option value="harness">하네스 (꼼꼼)</option>
             </select>
           </label>
         </div>
-        <p class="hint" id="role-mode-note"></p>
-      </section>
-
-      <!-- 4. 기억 (이전 대화) -->
-      <section class="card">
-        <h2>기억 — 이전 대화 <button id="clear-mem" class="ghost">초기화</button></h2>
-        <p class="hint" id="mem-count">저장된 대화 없음</p>
-        <div id="history" class="history"></div>
-      </section>
-
-      <!-- 4b. 노션 연동 -->
-      <section class="card">
-        <h2>노션 연동 <span id="notion-status" class="badge badge-muted">미연결</span></h2>
-        <div id="notion-connect">
-          <p class="hint">대화를 노션에도 저장하고 양방향 동기화합니다. 노션에서 ① 통합(Integration) 생성 → 토큰 복사 → ② 페이지 하나를 그 통합과 공유 → ③ 아래에 토큰과 그 페이지 주소를 붙여넣으세요. (오프라인에 쌓인 것도 온라인 되면 자동 합쳐집니다.)</p>
-          <input id="notion-token" type="password" placeholder="통합 토큰 (secret_... 또는 ntn_...)" />
-          <input id="notion-page" placeholder="공유한 노션 페이지 주소(URL)" />
-          <button id="notion-connect-btn" class="primary">연결</button>
-        </div>
-        <div id="notion-connected" hidden>
-          <p class="hint" id="notion-sync-info">연결됨</p>
-          <div class="install-direct">
-            <button id="notion-sync-btn">지금 동기화</button>
-            <button id="notion-disconnect-btn" class="ghost">연결 해제</button>
-          </div>
-        </div>
-      </section>
-
-      <!-- 5. 통합 프롬프트 -->
-      <section class="card">
-        <h2>프롬프트 <span id="img-backend" class="badge badge-muted">이미지 엔진 확인 중…</span></h2>
-        <p class="hint">하나의 입력으로 처리합니다 — 텍스트 작업 · 이미지 생성 · 이미지/문서 분석. 파일(이미지·txt·md·csv·json·코드·PDF)을 첨부하면 자동으로 활용합니다.</p>
-        <div class="mode-row">
-          <label>모드
-            <select id="mode">
-              <option value="auto">자동 감지</option>
-              <option value="text">텍스트 (하네스)</option>
-              <option value="image">이미지 생성</option>
-              <option value="vision">이미지 분석</option>
-            </select>
-          </label>
-        </div>
-        <textarea id="prompt" rows="4" placeholder="무엇이든 입력하세요. 예) 이 문서 요약해줘 · 카페 로고 그려줘 · 첨부한 이미지 평가해줘"></textarea>
+        <textarea id="prompt" rows="5" placeholder="무엇이든 입력하세요. 파일(이미지·PDF·문서)을 첨부하면 자동 활용 — &quot;그려줘&quot;라고 하면 이미지 생성."></textarea>
         <div class="attach-row">
           <input type="file" id="files" multiple accept="image/*,.txt,.md,.csv,.json,.html,.htm,.js,.ts,.py,.java,.c,.cpp,.go,.rs,.pdf,.log,.xml,.yaml,.yml" />
           <div id="attach-list" class="attach-list"></div>
         </div>
         <button id="run-btn" class="primary">실행</button>
+        <p class="hint" id="role-mode-note"></p>
       </section>
 
-      <!-- 6. 진행 / 결과 -->
+      <!-- 결과 -->
       <section class="card" id="run-section" hidden>
         <h2 id="run-title">진행 상황</h2>
         <div class="steps" id="steps"></div>
@@ -115,6 +52,65 @@
         <div id="img-out" class="img-result" hidden></div>
         <pre id="final" class="final">실행하면 여기에 표시됩니다.</pre>
       </section>
+
+      <!-- 모델 모달 -->
+      <div id="models-modal" class="modal" hidden>
+        <div class="modal-box">
+          <div class="modal-head">
+            <h2>모델 <span id="tier-badge" class="badge badge-muted"></span></h2>
+            <button id="models-close" class="modal-close" title="닫기">✕</button>
+          </div>
+          <div class="mem-grid">
+            <div><span class="mem-num" id="mem-total">–</span><small>총 RAM</small></div>
+            <div><span class="mem-num" id="mem-avail">–</span><small>가용 RAM</small></div>
+            <div><span class="mem-num tier" id="tier-num">–</span><small>난이도 단계</small></div>
+          </div>
+          <p class="tier-desc" id="tier-desc"></p>
+          <div class="install-direct">
+            <input id="custom-model" placeholder="모델 이름 직접 입력 (예: llama3.3:70b)" />
+            <button id="custom-install">설치</button>
+          </div>
+          <div id="tier-tabs" class="tabs tier-tabs"></div>
+          <div id="cat-tabs" class="tabs"></div>
+          <input id="model-search" class="search" placeholder="검색 (이름·분류)" />
+          <div id="model-list" class="model-list"></div>
+        </div>
+      </div>
+
+      <!-- 기억 모달 -->
+      <div id="memory-modal" class="modal" hidden>
+        <div class="modal-box">
+          <div class="modal-head">
+            <h2>기억 — 이전 대화 <button id="clear-mem" class="ghost">초기화</button></h2>
+            <button id="memory-close" class="modal-close" title="닫기">✕</button>
+          </div>
+          <p class="hint" id="mem-count">저장된 대화 없음</p>
+          <div id="history" class="history"></div>
+        </div>
+      </div>
+
+      <!-- 노션 모달 -->
+      <div id="notion-modal" class="modal" hidden>
+        <div class="modal-box">
+          <div class="modal-head">
+            <h2>노션 연동 <span id="notion-status" class="badge badge-muted">미연결</span></h2>
+            <button id="notion-close" class="modal-close" title="닫기">✕</button>
+          </div>
+          <div id="notion-connect">
+            <p class="hint">대화를 노션에도 저장하고 양방향 동기화합니다. 노션에서 ① 통합(Integration) 생성 → 토큰 복사 → ② 페이지 하나를 그 통합과 공유 → ③ 아래에 토큰과 페이지 주소 붙여넣기. (오프라인에 쌓인 것도 온라인 되면 자동 합쳐집니다.)</p>
+            <input id="notion-token" type="password" placeholder="통합 토큰 (secret_... 또는 ntn_...)" />
+            <input id="notion-page" placeholder="공유한 노션 페이지 주소(URL)" />
+            <button id="notion-connect-btn" class="primary">연결하고 저장</button>
+          </div>
+          <div id="notion-connected" hidden>
+            <p class="hint" id="notion-sync-info">연결됨</p>
+            <div class="install-direct">
+              <button id="notion-sync-btn">지금 동기화</button>
+              <button id="notion-disconnect-btn" class="ghost">연결 해제</button>
+            </div>
+          </div>
+        </div>
+      </div>
     </main>
   </body>
 </html>

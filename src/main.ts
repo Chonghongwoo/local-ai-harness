@@ -54,6 +54,15 @@ let activeCat = "전체";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
 
+// 모달 열기/닫기 + 배경 클릭으로 닫기
+function wireModal(openSel: string, modalSel: string, closeSel: string) {
+  $(openSel).addEventListener("click", () => ($(modalSel).hidden = false));
+  $(closeSel).addEventListener("click", () => ($(modalSel).hidden = true));
+  $(modalSel).addEventListener("click", (e) => {
+    if (e.target === e.currentTarget) $(modalSel).hidden = true;
+  });
+}
+
 let autoStarted = false;
 let installing = false;
 
@@ -134,6 +143,7 @@ async function loadSystem() {
   $("#mem-avail").textContent = `${info.available_gb.toFixed(1)}GB`;
   $("#tier-num").textContent = `${info.tier} · ${info.tier_label}`;
   $("#tier-desc").textContent = info.tier_desc;
+  $("#tier-badge").textContent = `${info.tier}단계 · ${info.tier_label}`;
   detectedTier = info.tier;
   catalogTier = info.tier; // 기본은 내 PC 단계 모델만 보여줌
 }
@@ -456,7 +466,19 @@ async function refreshNotion() {
     badge.textContent = "미연결";
     badge.className = "badge badge-muted";
   }
+  // 헤더 노션 버튼 표시
+  document.querySelector("#notion-open")?.classList.toggle("on", s.connected);
+  const dot = document.querySelector("#notion-dot");
+  if (dot) dot.textContent = s.connected ? "●" : "○";
   return s.connected;
+}
+
+function openNotion() {
+  $("#notion-modal").hidden = false;
+  refreshNotion();
+}
+function closeNotion() {
+  $("#notion-modal").hidden = true;
 }
 
 async function notionConnect() {
@@ -470,7 +492,8 @@ async function notionConnect() {
     await invoke("notion_connect", { token, page });
     $<HTMLInputElement>("#notion-token").value = "";
     await refreshNotion();
-    await notionSync();
+    closeNotion(); // 저장되면 창 닫기
+    notionSync();
   } catch (e) {
     alert("연결 실패: " + e);
   } finally {
@@ -508,24 +531,6 @@ async function notionDisconnect() {
   if (!confirm("노션 연결을 해제할까요? (로컬 대화 기록은 그대로 유지됩니다)")) return;
   await invoke("notion_disconnect").catch(() => {});
   await refreshNotion();
-}
-
-// ---------- 이미지 엔진 상태 배지 ----------
-
-async function checkImageBackends() {
-  const b = await invoke<{ a1111: boolean; comfy: boolean }>("check_image_backends").catch(() => ({
-    a1111: false,
-    comfy: false,
-  }));
-  const el = $("#img-backend");
-  const found = [b.a1111 && "Automatic1111", b.comfy && "ComfyUI"].filter(Boolean);
-  if (found.length) {
-    el.textContent = `이미지 엔진: ${found.join(" + ")}`;
-    el.className = "badge badge-ok";
-  } else {
-    el.textContent = "이미지 엔진 없음 (:7860 / :8188)";
-    el.className = "badge badge-err";
-  }
 }
 
 // ---------- 첨부 파일 ----------
@@ -596,10 +601,8 @@ function pickVisionModel(): string {
 }
 
 function decideMode(prompt: string, hasImage: boolean): "text" | "image" | "vision" {
-  const sel = $<HTMLSelectElement>("#mode").value;
-  if (sel === "text" || sel === "image" || sel === "vision") return sel;
-  if (hasImage) return "vision";
-  if (GEN_INTENT.test(prompt)) return "image";
+  if (hasImage) return "vision"; // 이미지 첨부 → 분석
+  if (GEN_INTENT.test(prompt)) return "image"; // "그려줘" 류 → 생성
   return "text";
 }
 
@@ -701,6 +704,13 @@ window.addEventListener("DOMContentLoaded", async () => {
     }),
   );
   $("#files").addEventListener("change", renderAttachList);
+  wireModal("#models-open", "#models-modal", "#models-close");
+  wireModal("#memory-open", "#memory-modal", "#memory-close");
+  $("#notion-open").addEventListener("click", openNotion);
+  $("#notion-close").addEventListener("click", closeNotion);
+  $("#notion-modal").addEventListener("click", (e) => {
+    if (e.target === e.currentTarget) closeNotion();
+  });
   $("#notion-connect-btn").addEventListener("click", notionConnect);
   $("#notion-sync-btn").addEventListener("click", notionSync);
   $("#notion-disconnect-btn").addEventListener("click", notionDisconnect);
@@ -710,9 +720,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   await refreshOllama();
   await loadModels();
   await loadHistory();
-  await checkImageBackends();
-  if (await refreshNotion()) notionSync(); // 앱 시작 시 연결돼 있으면 자동 동기화(오프라인 누적분 따라잡기)
+  if (await refreshNotion()) notionSync(); // 시작 시 연결돼 있으면 자동 동기화(오프라인 누적분 따라잡기)
   setInterval(refreshOllama, 5000);
-  setInterval(checkImageBackends, 8000);
   checkForUpdate();
 });
