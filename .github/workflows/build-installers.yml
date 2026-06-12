@@ -1,0 +1,43 @@
+name: build-installers
+
+# 태그(v로 시작)를 푸시하면 윈도우·맥 설치파일을 만들어 GitHub Release에 올립니다.
+# 수동 실행(workflow_dispatch)도 가능합니다.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest # Apple Silicon .dmg/.app
+          - platform: windows-latest # .msi + .exe(nsis)
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # rust-toolchain.toml 이 1.88 을 고정하므로 동일 버전 설치
+      - uses: dtolnay/rust-toolchain@1.88.0
+
+      - name: 프런트엔드 의존성 설치
+        run: npm install
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "로컬 AI 하네스 __VERSION__"
+          releaseBody: "아래 자산(assets)에서 OS에 맞는 설치파일을 받으세요. 실행에는 Ollama 설치가 필요합니다."
+          releaseDraft: true
+          prerelease: false
