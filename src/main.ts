@@ -1,9 +1,29 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import * as pdfjsLib from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+
+// 새 버전 확인 → 동의 시 다운로드·설치·재시작
+async function checkForUpdate() {
+  try {
+    const update = await check();
+    if (update) {
+      const ok = confirm(
+        `새 버전 ${update.version}이(가) 있습니다. 지금 업데이트할까요?\n\n${update.body ?? ""}`,
+      );
+      if (ok) {
+        await update.downloadAndInstall();
+        await relaunch();
+      }
+    }
+  } catch (e) {
+    console.warn("업데이트 확인 실패(무시):", e);
+  }
+}
 
 interface SystemInfo {
   total_gb: number;
@@ -590,4 +610,5 @@ window.addEventListener("DOMContentLoaded", async () => {
   await checkImageBackends();
   setInterval(refreshOllama, 5000);
   setInterval(checkImageBackends, 8000);
+  checkForUpdate();
 });

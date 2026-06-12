@@ -35,9 +35,11 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "로컬 AI 하네스 __VERSION__"
           releaseBody: "아래 자산(assets)에서 OS에 맞는 설치파일을 받으세요. 실행에는 Ollama 설치가 필요합니다."
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
