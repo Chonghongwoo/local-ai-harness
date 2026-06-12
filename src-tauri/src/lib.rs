@@ -710,6 +710,32 @@ fn emit_step(app: &AppHandle, phase: &str, status: &str, detail: &str) {
 // ---------- 하네스 오케스트레이션 ----------
 // 기억 주입 → 분해 → 작업(병렬·캐시) → 검토 → 종합(스트리밍) → 요약 저장
 
+// 대화 요약 후 기억에 저장 (단일/추론/자기수정 공용)
+async fn save_and_summarize(
+    app: &AppHandle,
+    client: &reqwest::Client,
+    model: &str,
+    prompt: &str,
+    answer: &str,
+) {
+    let summary_prompt = format!(
+        "다음 요청과 답변을 한국어 1~2문장으로 요약하라. 핵심만.\n\n요청: {prompt}\n\n답변: {answer}"
+    );
+    let summary = generate(client, model, &summary_prompt)
+        .await
+        .unwrap_or_else(|_| prompt.chars().take(60).collect());
+    save_conversation(
+        app,
+        Conversation {
+            time: now_ms(),
+            prompt: prompt.to_string(),
+            summary,
+            result: answer.to_string(),
+        },
+    );
+    let _ = app.emit("memory-saved", serde_json::json!({}));
+}
+
 // 단일 실행: 모델 하나가 한 번에 답 (분해 없음) + 기억 주입/저장
 #[tauri::command]
 async fn run_single(app: AppHandle, prompt: String, model: String) -> Result<String, String> {
@@ -718,23 +744,136 @@ async fn run_single(app: AppHandle, prompt: String, model: String) -> Result<Str
     let _ = app.emit("memory-info", serde_json::json!({ "count": mem_count }));
     let full = format!("{mem}{prompt}");
     let answer = generate_stream(&app, &client, &model, &full, "final-token").await?;
-    let summary_prompt = format!(
-        "다음 요청과 답변을 한국어 1~2문장으로 요약하라. 핵심만.\n\n요청: {prompt}\n\n답변: {answer}"
-    );
-    let summary = generate(&client, &model, &summary_prompt)
-        .await
-        .unwrap_or_else(|_| prompt.chars().take(60).collect());
-    save_conversation(
-        &app,
-        Conversation {
-            time: now_ms(),
-            prompt: prompt.clone(),
-            summary,
-            result: answer.clone(),
-        },
-    );
-    let _ = app.emit("memory-saved", serde_json::json!({}));
+    save_and_summarize(&app, &client, &model, &prompt, &answer).await;
     Ok(answer)
+}
+
+// 추론 실행: 단계별로 깊게 추론 후 답 (어려운 문제 / 추론모델 r1 권장)
+#[tauri::command]
+async fn run_reasoning(app: AppHandle, prompt: String, model: String) -> Result<String, String> {
+    let client = reqwest::Client::new();
+    let (mem_count, mem) = memory_context(&app);
+    let _ = app.emit("memory-info", serde_json::json!({ "count": mem_count }));
+    let full = format!(
+        "{mem}다음 문제를 단계별로 신중히 추론하라. 가정과 근거를 따져보고, 마지막에 '최종 답:'으로 명확한 결론을 제시하라.\n\n{prompt}"
+    );
+    let answer = generate_stream(&app, &client, &model, &full, "final-token").await?;
+    save_and_summarize(&app, &client, &model, &prompt, &answer).await;
+    Ok(answer)
+}
+
+// 자기수정 실행: 초안 → 스스로 비평 → 개선 (정확도↑)
+#[tauri::command]
+async fn run_refine(app: AppHandle, prompt: String, model: String) -> Result<String, String> {
+    let client = reqwest::Client::new();
+    let (mem_count, mem) = memory_context(&app);
+    let _ = app.emit("memory-info", serde_json::json!({ "count": mem_count }));
+
+    emit_step(&app, "draft", "start", "초안 작성 중...");
+    let draft = generate(&client, &model, &format!("{mem}{prompt}")).await?;
+    emit_step(&app, "draft", "done", "");
+
+    emit_step(&app, "critique", "start", "스스로 검토 중...");
+    let critique = generate(
+        &client,
+        &model,
+        &format!("다음 답변의 사실 오류·누락·약점을 구체적으로 짧게 지적하라.\n\n질문: {prompt}\n\n답변: {draft}"),
+    )
+    .await?;
+    emit_step(&app, "critique", "done", &critique);
+
+    emit_step(&app, "improve", "start", "개선본 작성 중...");
+    let improve_prompt = format!(
+        "{mem}아래 지적을 반영해 더 정확하고 완성도 높은 최종 답변을 작성하라.\n\n질문: {prompt}\n\n초안: {draft}\n\n지적: {critique}"
+    );
+    let answer = generate_stream(&app, &client, &model, &improve_prompt, "final-token").await?;
+    emit_step(&app, "improve", "done", "");
+
+    save_and_summarize(&app, &client, &model, &prompt, &answer).await;
+    Ok(answer)
+}
+
+// ---------- RAG (문서 임베딩 검색) ----------
+
+async fn embed(
+    client: &reqwest::Client,
+    model: &str,
+    inputs: Vec<String>,
+) -> Result<Vec<Vec<f32>>, String> {
+    #[derive(Deserialize)]
+    struct R {
+        embeddings: Vec<Vec<f32>>,
+    }
+    let r = client
+        .post(format!("{OLLAMA}/api/embed"))
+        .json(&serde_json::json!({ "model": model, "input": inputs }))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json::<R>()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(r.embeddings)
+}
+
+fn cosine(a: &[f32], b: &[f32]) -> f32 {
+    let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+    let na: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let nb: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if na == 0.0 || nb == 0.0 {
+        0.0
+    } else {
+        dot / (na * nb)
+    }
+}
+
+fn chunk_text(text: &str, size: usize, overlap: usize) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut chunks = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let end = (i + size).min(chars.len());
+        chunks.push(chars[i..end].iter().collect());
+        if end == chars.len() {
+            break;
+        }
+        i += size.saturating_sub(overlap).max(1);
+    }
+    chunks
+}
+
+// 문서를 청크로 쪼개 임베딩 → 질문과 가장 관련 있는 top_k 청크만 반환
+#[tauri::command]
+async fn rag_context(
+    query: String,
+    doc_text: String,
+    embed_model: String,
+    top_k: usize,
+) -> Result<String, String> {
+    let client = reqwest::Client::new();
+    let chunks = chunk_text(&doc_text, 800, 150);
+    if chunks.is_empty() {
+        return Ok(String::new());
+    }
+    let chunk_embs = embed(&client, &embed_model, chunks.clone()).await?;
+    let q_emb = embed(&client, &embed_model, vec![query])
+        .await?
+        .into_iter()
+        .next()
+        .ok_or("쿼리 임베딩 실패")?;
+    let mut scored: Vec<(f32, usize)> = chunk_embs
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (cosine(&q_emb, e), i))
+        .collect();
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    let k = top_k.min(chunks.len());
+    let selected: Vec<String> = scored
+        .into_iter()
+        .take(k)
+        .map(|(_, i)| chunks[i].clone())
+        .collect();
+    Ok(selected.join("\n---\n"))
 }
 
 // 하네스 실행: 모델 하나로 분해·작업·검토·종합 전부 수행
@@ -856,6 +995,9 @@ pub fn run() {
             delete_model,
             run_harness,
             run_single,
+            run_reasoning,
+            run_refine,
+            rag_context,
             list_conversations,
             clear_conversations,
             check_image_backends,

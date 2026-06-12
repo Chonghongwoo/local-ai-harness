@@ -290,13 +290,18 @@ function updateRoleNote() {
   const model = $<HTMLSelectElement>("#ai-model").value;
   const mode = $<HTMLSelectElement>("#harness-mode").value;
   const note = $("#role-mode-note");
-  if (!model) {
-    note.textContent = "";
-  } else if (mode === "single") {
-    note.textContent = `단일 — ${model} 모델이 한 번에 바로 답합니다.`;
-  } else {
-    note.textContent = `하네스 — ${model} 모델로 분해·작업·검토·종합을 수행합니다.`;
-  }
+  const desc: Record<string, string> = {
+    single: "한 번에 바로 답합니다.",
+    reasoning: "단계별로 깊게 추론한 뒤 답합니다 (어려운 문제·추론모델 권장).",
+    refine: "초안을 쓰고 스스로 비평해 개선합니다 (정확도↑).",
+    harness: "분해·작업·검토·종합 파이프라인을 돌립니다.",
+  };
+  note.textContent = model ? `${model} — ${desc[mode] || ""}` : "";
+}
+
+// 설치된 임베딩 모델 자동 선택 (RAG용)
+function pickEmbedModel(): string {
+  return installed.find((m) => /embed|bge|nomic|mxbai/i.test(m)) || "";
 }
 
 async function pull(model: string, btn: HTMLButtonElement) {
@@ -334,6 +339,9 @@ const PHASE_LABEL: Record<string, string> = {
   work: "② 작업",
   review: "③ 검토 · 관리",
   synthesize: "④ 종합 · 관리",
+  draft: "① 초안",
+  critique: "② 자기 비평",
+  improve: "③ 개선",
 };
 
 function getStepRow(phase: string): HTMLElement {
@@ -567,22 +575,49 @@ async function run() {
         return alert("먼저 모델을 설치하세요.");
       }
       const harnessMode = $<HTMLSelectElement>("#harness-mode").value;
-      const full = prompt + (docText ? `\n\n[첨부 문서]\n${docText}` : "");
-      delete f.dataset.streaming;
-      if (harnessMode === "single") {
-        $("#run-title").textContent = `단일 · ${model}`;
-        showResult(false, false);
-        f.textContent = "실행 중…";
-        const result = await invoke<string>("run_single", { prompt: full, model });
-        f.textContent = result;
-      } else {
-        $("#run-title").textContent = "진행 상황";
-        showResult(true, false);
-        f.textContent = "실행 중…";
-        $("#steps").innerHTML = ""; // 진행 표시 초기화 (동적 생성)
-        const result = await invoke<string>("run_harness", { prompt: full, model });
-        f.textContent = result;
+
+      // RAG: 문서가 길고 임베딩 모델이 있으면 관련 부분만 검색해 맥락으로 사용
+      let context = docText;
+      let ragNote = "";
+      if (docText && docText.length > 3000) {
+        const embedModel = pickEmbedModel();
+        if (embedModel) {
+          f.textContent = "문서 검색(RAG) 중…";
+          const retrieved = await invoke<string>("rag_context", {
+            query: prompt,
+            docText,
+            embedModel,
+            topK: 6,
+          }).catch(() => "");
+          if (retrieved) {
+            context = retrieved;
+            ragNote = ` · 문서검색(RAG) ${embedModel}`;
+          }
+        }
       }
+      const full = prompt + (context ? `\n\n[첨부 문서]\n${context}` : "");
+      const labels: Record<string, string> = {
+        single: "단일",
+        reasoning: "추론",
+        refine: "자기수정",
+        harness: "하네스",
+      };
+      delete f.dataset.streaming;
+      const cmd =
+        harnessMode === "reasoning"
+          ? "run_reasoning"
+          : harnessMode === "refine"
+            ? "run_refine"
+            : harnessMode === "harness"
+              ? "run_harness"
+              : "run_single";
+      const showSteps = harnessMode === "refine" || harnessMode === "harness";
+      $("#run-title").textContent = (showSteps ? "진행 상황 · " : "") + labels[harnessMode] + ` · ${model}${ragNote}`;
+      showResult(showSteps, false);
+      if (showSteps) $("#steps").innerHTML = "";
+      f.textContent = "실행 중…";
+      const result = await invoke<string>(cmd, { prompt: full, model });
+      f.textContent = result;
     }
   } catch (err) {
     f.textContent = "오류: " + err;
