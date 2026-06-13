@@ -744,7 +744,9 @@ async fn run_single(app: AppHandle, prompt: String, model: String) -> Result<Str
     let client = reqwest::Client::new();
     let (mem_count, mem) = memory_context(&app);
     let _ = app.emit("memory-info", serde_json::json!({ "count": mem_count }));
-    let full = format!("{mem}{prompt}");
+    let full = format!(
+        "{mem}간결하게 핵심만 답하라. 단순한 질문이면 한두 문장으로 답하고, 서론·반복·과정 설명 없이 답만 제시하라.\n\n질문: {prompt}"
+    );
     let answer = generate_stream(&app, &client, &model, &full, "final-token").await?;
     save_and_summarize(&app, &client, &model, &prompt, &answer).await;
     Ok(answer)
@@ -1206,7 +1208,7 @@ async fn run_harness(app: AppHandle, prompt: String, model: String) -> Result<St
     // 4) 종합 — 추론(단계적 사고)으로 초안 작성
     emit_step(&app, "synthesize", "start", "단계적으로 추론하며 종합 중...");
     let synth_prompt = format!(
-        "{mem}다음 부분 결과와 검토 의견을 바탕으로, 단계적으로 추론하며 원래 요청에 대한 하나의 완성된 답변을 작성하라.\n\n요청: {prompt}\n\n부분 결과:\n{joined}\n\n검토 의견:\n{review}"
+        "{mem}다음 부분 결과와 검토 의견을 바탕으로 원래 요청에 대한 최종 답변을 작성하라. 간결하게 핵심만 쓰고, 답변 본문만 출력하라(과정·메타 설명 금지).\n\n요청: {prompt}\n\n부분 결과:\n{joined}\n\n검토 의견:\n{review}"
     );
     let draft = generate(&client, &model, &synth_prompt).await?;
     emit_step(&app, "synthesize", "done", "");
@@ -1220,7 +1222,7 @@ async fn run_harness(app: AppHandle, prompt: String, model: String) -> Result<St
     )
     .await?;
     let improve_prompt = format!(
-        "{mem}아래 지적을 반영해 더 정확하고 완성도 높은 최종 답변을 작성하라.\n\n요청: {prompt}\n\n초안: {draft}\n\n지적: {critique}"
+        "{mem}아래 지적을 반영해 더 정확한 최종 답변을 작성하라. 간결하게 핵심만, 답변 본문만 출력하라. '수정판을 작성합니다' 같은 과정·메타 설명은 절대 쓰지 마라.\n\n요청: {prompt}\n\n초안: {draft}\n\n지적: {critique}"
     );
     let final_answer =
         generate_stream(&app, &client, &model, &improve_prompt, "final-token").await?;
